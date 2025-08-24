@@ -47,7 +47,7 @@ function monthKey(dateStr) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, "0")}`;
 }
 
-// ---- Supabase client (читаем из env)
+// Supabase client
 const SUPA_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPA_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = (SUPA_URL && SUPA_KEY) ? createClient(SUPA_URL, SUPA_KEY) : null;
@@ -71,7 +71,6 @@ export default function FamilyExpensesApp() {
   const [fSpender, setFSpender] = useState("");
   const [fCategory, setFCategory] = useState("");
 
-  // локальный кэш
   useEffect(() => { saveExpenses(expenses) }, [expenses]);
 
   // первичная загрузка из облака + realtime
@@ -85,9 +84,7 @@ export default function FamilyExpensesApp() {
         .select("*")
         .eq("household", household)
         .order("date", { ascending: false });
-      if (!error && isMounted) {
-        setExpenses(data.map(dbToUi));
-      }
+      if (!error && isMounted) setExpenses(data.map(dbToUi));
     }
     loadCloud();
 
@@ -95,7 +92,7 @@ export default function FamilyExpensesApp() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "expenses", filter: `household=eq.${household}` },
-        () => loadCloud() // на любое изменение просто перезагружаем список
+        () => loadCloud()
       )
       .subscribe();
 
@@ -119,7 +116,7 @@ export default function FamilyExpensesApp() {
         if (!s.includes(q.toLowerCase())) return false;
       }
       return true;
-    });
+    })
   }, [expenses, fromDate, toDate, fSpender, fCategory, q]);
 
   const total = useMemo(() => filtered.reduce((sum, e) => sum + (Number(e.amount) || 0), 0), [filtered]);
@@ -144,11 +141,12 @@ export default function FamilyExpensesApp() {
       return next.sort((a,b) => (a.date < b.date ? 1 : -1));
     });
 
-    // облако
+    // в облако
     if (cloudEnabled) {
       const row = uiToDb(entry, household);
       await supabase.from("expenses").upsert(row, { onConflict: "id" });
     }
+
     resetForm();
   }
 
@@ -166,11 +164,11 @@ export default function FamilyExpensesApp() {
     }
   }
 
-  // CSV / XLSX — без изменений
   function exportCSV() {
-    const header = ["id","date","from","to","category","amount","spender","note"];
+    const header = ["id","date","from","to","category","amount","spender","note"]; 
     const rows = expenses.map(e => header.map(k => (""+ (e[k] ?? "")).replaceAll('"', '""')));
-    const csv = [header.join(","), ...rows.map(r => r.map(v => `"${v}"`).join(","))].join("\n");
+    const csv = [header.join(","), ...rows.map(r => r.map(v => `"${v}"`).join(","))].join("
+");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -185,7 +183,9 @@ export default function FamilyExpensesApp() {
     reader.onload = async () => {
       try {
         const text = String(reader.result);
-        const lines = text.split(/\r?\n/).filter(Boolean);
+        const lines = text.split(/
+?
+/).filter(Boolean);
         const header = lines.shift().split(",").map(h => h.replaceAll('"','').trim());
         const idx = (name) => header.indexOf(name);
         const list = lines.map(line => {
@@ -201,16 +201,13 @@ export default function FamilyExpensesApp() {
             note: cols[idx("note")] || "",
           }
         });
-        // локально
         setExpenses(prev => {
           const map = new Map(prev.map(e => [e.id, e]));
           for (const e of list) map.set(e.id, e);
           return Array.from(map.values()).sort((a,b)=> (a.date < b.date ? 1 : -1));
         });
-        // облако
         if (cloudEnabled) {
           const rows = list.map(e => uiToDb(e, household));
-          // батч по 500 — тут обычно мало, вставим сразу
           await supabase.from("expenses").upsert(rows, { onConflict: "id" });
         }
       } catch (err) {
@@ -313,7 +310,7 @@ export default function FamilyExpensesApp() {
           </CardContent>
         </Card>
 
-        {/* Форма ввода */}
+        {/* Верхняя панель */}
         <header className="flex items-center justify-between gap-4">
           <h1 className="text-2xl md:text-3xl font-semibold">Аналитика семейных расходов</h1>
           <div className="flex gap-2">
@@ -368,7 +365,6 @@ export default function FamilyExpensesApp() {
           </CardContent>
         </Card>
 
-        {/* Фильтры и список */}
         <Card className="shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2"><Filter className="h-5 w-5"/>Фильтры и список</CardTitle>
@@ -454,7 +450,6 @@ export default function FamilyExpensesApp() {
           </CardContent>
         </Card>
 
-        {/* Аналитика */}
         <Card className="shadow-sm">
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><PieIcon className="h-5 w-5"/>Аналитика</CardTitle>
@@ -566,7 +561,7 @@ export default function FamilyExpensesApp() {
   );
 }
 
-// ---- helpers to map UI <-> DB
+// helpers UI <-> DB
 function dbToUi(r){
   return {
     id: r.id,
