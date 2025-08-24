@@ -9,10 +9,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Download, Upload, Trash2, Edit3, Filter, PieChart as PieIcon, Plus, Save, FileSpreadsheet } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Bar, BarChart, XAxis, YAxis, Legend, CartesianGrid } from "recharts";
 import * as XLSX from "xlsx";
+import { createClient } from "@supabase/supabase-js";
 
 function uid() { return Math.random().toString(36).slice(2, 10) }
 
 const STORAGE_KEY = "family-expenses-v1";
+const HOUSEHOLD_KEY = "family-expenses-household";
 
 const DEFAULT_COLORS = [
   "#2563eb", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#06b6d4", "#84cc16", "#e11d48",
@@ -23,20 +25,14 @@ function loadExpenses() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed;
+    return Array.isArray(parsed) ? parsed : [];
   } catch { return [] }
 }
-
-function saveExpenses(list) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-}
-
+function saveExpenses(list) { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); }
 function formatMoney(n) {
   if (Number.isNaN(n)) return "0";
   return new Intl.NumberFormat(undefined, { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(n);
 }
-
 function groupBy(arr, keyFn) {
   const map = new Map();
   for (const item of arr) {
@@ -45,12 +41,16 @@ function groupBy(arr, keyFn) {
   }
   return map;
 }
-
 function monthKey(dateStr) {
   const d = new Date(dateStr);
   if (isNaN(d)) return "";
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, "0")}`;
 }
+
+// ---- Supabase client (читаем из env)
+const SUPA_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPA_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = (SUPA_URL && SUPA_KEY) ? createClient(SUPA_URL, SUPA_KEY) : null;
 
 export default function FamilyExpensesApp() {
   const [expenses, setExpenses] = useState(loadExpenses());
@@ -59,6 +59,11 @@ export default function FamilyExpensesApp() {
   });
   const [editingId, setEditingId] = useState(null);
 
+  // облако
+  const [household, setHousehold] = useState(localStorage.getItem(HOUSEHOLD_KEY) || "");
+  const cloudEnabled = Boolean(supabase && household);
+
+  // фильтры
   const [filterOpen, setFilterOpen] = useState(false);
   const [q, setQ] = useState("");
   const [fromDate, setFromDate] = useState("");
@@ -66,7 +71,39 @@ export default function FamilyExpensesApp() {
   const [fSpender, setFSpender] = useState("");
   const [fCategory, setFCategory] = useState("");
 
+  // локальный кэш
   useEffect(() => { saveExpenses(expenses) }, [expenses]);
+
+  // первичная загрузка из облака + realtime
+  useEffect(() => {
+    if (!cloudEnabled) return;
+    let isMounted = true;
+
+    async function loadCloud() {
+      const { data, error } = await supabase
+        .from("expenses")
+        .select("*")
+        .eq("household", household)
+        .order("date", { ascending: false });
+      if (!error && isMounted) {
+        setExpenses(data.map(dbToUi));
+      }
+    }
+    loadCloud();
+
+    const channel = supabase.channel(`exp_${household}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "expenses", filter: `household=eq.${household}` },
+        () => loadCloud() // на любое изменение просто перезагружаем список
+      )
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      supabase.removeChannel(channel);
+    };
+  }, [household, cloudEnabled]);
 
   const uniqueSpenders = useMemo(() => Array.from(new Set(expenses.map(e => e.spender).filter(Boolean))).sort(), [expenses]);
   const uniqueCategories = useMemo(() => Array.from(new Set(expenses.map(e => e.category).filter(Boolean))).sort(), [expenses]);
@@ -82,7 +119,7 @@ export default function FamilyExpensesApp() {
         if (!s.includes(q.toLowerCase())) return false;
       }
       return true;
-    })
+    });
   }, [expenses, fromDate, toDate, fSpender, fCategory, q]);
 
   const total = useMemo(() => filtered.reduce((sum, e) => sum + (Number(e.amount) || 0), 0), [filtered]);
@@ -92,7 +129,7 @@ export default function FamilyExpensesApp() {
     setEditingId(null);
   }
 
-  function submitForm(ev) {
+  async function submitForm(ev) {
     ev.preventDefault();
     const amt = parseFloat(String(form.amount).replace(",", "."));
     if (!form.date || !form.category || !form.spender || !amt) {
@@ -100,10 +137,18 @@ export default function FamilyExpensesApp() {
       return;
     }
     const entry = { id: editingId || uid(), date: form.date, from: form.from.trim(), to: form.to.trim(), category: form.category.trim(), amount: amt, spender: form.spender.trim(), note: form.note?.trim() };
+
+    // локально
     setExpenses(prev => {
-      if (editingId) return prev.map(e => e.id === editingId ? entry : e);
-      return [entry, ...prev].sort((a,b) => (a.date < b.date ? 1 : -1));
+      const next = editingId ? prev.map(e => e.id === editingId ? entry : e) : [entry, ...prev];
+      return next.sort((a,b) => (a.date < b.date ? 1 : -1));
     });
+
+    // облако
+    if (cloudEnabled) {
+      const row = uiToDb(entry, household);
+      await supabase.from("expenses").upsert(row, { onConflict: "id" });
+    }
     resetForm();
   }
 
@@ -113,13 +158,17 @@ export default function FamilyExpensesApp() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function deleteRow(id) {
+  async function deleteRow(id) {
     if (!confirm("Удалить запись?")) return;
     setExpenses(prev => prev.filter(e => e.id !== id));
+    if (cloudEnabled) {
+      await supabase.from("expenses").delete().eq("id", id).eq("household", household);
+    }
   }
 
+  // CSV / XLSX — без изменений
   function exportCSV() {
-    const header = ["id","date","from","to","category","amount","spender","note"]; 
+    const header = ["id","date","from","to","category","amount","spender","note"];
     const rows = expenses.map(e => header.map(k => (""+ (e[k] ?? "")).replaceAll('"', '""')));
     const csv = [header.join(","), ...rows.map(r => r.map(v => `"${v}"`).join(","))].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -133,14 +182,14 @@ export default function FamilyExpensesApp() {
 
   function importCSV(file) {
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const text = String(reader.result);
         const lines = text.split(/\r?\n/).filter(Boolean);
         const header = lines.shift().split(",").map(h => h.replaceAll('"','').trim());
         const idx = (name) => header.indexOf(name);
         const list = lines.map(line => {
-          const cols = line.match(/((?:^|,)(?:\"(?:[^\"]|\"\")*\"|[^,]*))/g)?.map(s => s.replace(/^,?\"?|\"?$/g, "").replaceAll('\"\"','\"')) || line.split(",");
+          const cols = line.match(/((?:^|,)(?:\"(?:[^\"]|\"\")*\"|[^,]*))/g)?.map(s => s.replace(/^,?\"?|\"?$/g, "").replaceAll('""','"')) || line.split(",");
           return {
             id: cols[idx("id")] || uid(),
             date: cols[idx("date")] || new Date().toISOString().slice(0,10),
@@ -152,11 +201,18 @@ export default function FamilyExpensesApp() {
             note: cols[idx("note")] || "",
           }
         });
+        // локально
         setExpenses(prev => {
           const map = new Map(prev.map(e => [e.id, e]));
           for (const e of list) map.set(e.id, e);
           return Array.from(map.values()).sort((a,b)=> (a.date < b.date ? 1 : -1));
         });
+        // облако
+        if (cloudEnabled) {
+          const rows = list.map(e => uiToDb(e, household));
+          // батч по 500 — тут обычно мало, вставим сразу
+          await supabase.from("expenses").upsert(rows, { onConflict: "id" });
+        }
       } catch (err) {
         alert("Не удалось импортировать CSV: " + err);
       }
@@ -164,7 +220,6 @@ export default function FamilyExpensesApp() {
     reader.readAsText(file);
   }
 
-  // XLSX export
   function exportXLSX() {
     try {
       const bySpender = Array.from(groupBy(filtered, e => e.spender)).map(([name, items]) => ({ name: name || "(не указано)", value: items.reduce((s,x)=>s+x.amount,0) }));
@@ -224,6 +279,41 @@ export default function FamilyExpensesApp() {
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8">
       <div className="mx-auto max-w-7xl space-y-6">
+
+        {/* Панель облачной синхронизации */}
+        <Card className="shadow-sm">
+          <CardHeader>
+            <CardTitle>Общий доступ</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-3 items-end">
+            <div className="md:col-span-2">
+              <Label>Код семьи (общее пространство)</Label>
+              <Input placeholder="например, novikova-family" value={household} onChange={e=>{
+                setHousehold(e.target.value.trim());
+              }}/>
+              <div className="text-xs text-slate-500 mt-1">
+                Все, кто введут такой же код, увидят одинаковые данные. {supabase ? "" : "Добавь переменные VITE_SUPABASE_URL и VITE_SUPABASE_ANON_KEY, чтобы включить облачную синхронизацию."}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={()=>{
+                if (!supabase) { alert("Облако недоступно: не задан VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY"); return; }
+                localStorage.setItem(HOUSEHOLD_KEY, household || "");
+                window.location.reload();
+              }}>Применить</Button>
+              <Button variant="secondary" onClick={()=>{
+                setHousehold("");
+                localStorage.removeItem(HOUSEHOLD_KEY);
+                window.location.reload();
+              }}>Отключить</Button>
+            </div>
+            <div className="md:col-span-3 text-sm text-slate-600">
+              Статус: {cloudEnabled ? "облако подключено" : "локальный режим"}.
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Форма ввода */}
         <header className="flex items-center justify-between gap-4">
           <h1 className="text-2xl md:text-3xl font-semibold">Аналитика семейных расходов</h1>
           <div className="flex gap-2">
@@ -278,6 +368,7 @@ export default function FamilyExpensesApp() {
           </CardContent>
         </Card>
 
+        {/* Фильтры и список */}
         <Card className="shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2"><Filter className="h-5 w-5"/>Фильтры и список</CardTitle>
@@ -363,6 +454,7 @@ export default function FamilyExpensesApp() {
           </CardContent>
         </Card>
 
+        {/* Аналитика */}
         <Card className="shadow-sm">
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><PieIcon className="h-5 w-5"/>Аналитика</CardTitle>
@@ -474,8 +566,29 @@ export default function FamilyExpensesApp() {
   );
 }
 
-function todayOffset(deltaDays=0){
-  const d = new Date();
-  d.setDate(d.getDate()+deltaDays);
-  return d.toISOString().slice(0,10);
+// ---- helpers to map UI <-> DB
+function dbToUi(r){
+  return {
+    id: r.id,
+    date: r.date,
+    from: r.from || "",
+    to: r.to || "",
+    category: r.category || "",
+    amount: Number(r.amount) || 0,
+    spender: r.spender || "",
+    note: r.note || "",
+  };
+}
+function uiToDb(e, household){
+  return {
+    id: e.id,
+    date: e.date,
+    from: e.from || null,
+    to: e.to || null,
+    category: e.category || null,
+    amount: Number(e.amount) || 0,
+    spender: e.spender || null,
+    note: e.note || null,
+    household,
+  };
 }
