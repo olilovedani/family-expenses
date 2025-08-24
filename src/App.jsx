@@ -5,7 +5,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Download, Upload, Trash2, Edit3, Filter, PieChart as PieIcon, Plus, Save, FileSpreadsheet } from "lucide-react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Bar, BarChart, XAxis, YAxis, Legend, CartesianGrid } from "recharts";
@@ -137,11 +136,11 @@ export default function FamilyExpensesApp() {
     reader.onload = () => {
       try {
         const text = String(reader.result);
-        const lines = text.split(/\\r?\\n/).filter(Boolean);
+        const lines = text.split(/\r?\n/).filter(Boolean);
         const header = lines.shift().split(",").map(h => h.replaceAll('"','').trim());
         const idx = (name) => header.indexOf(name);
         const list = lines.map(line => {
-          const cols = line.match(/((?:^|,)(?:\\\"(?:[^\\\"]|\\\"\\\")*\\\"|[^,]*))/g)?.map(s => s.replace(/^,?\\\"?|\\\"?$/g, "").replaceAll('\"\"','\"')) || line.split(",");
+          const cols = line.match(/((?:^|,)(?:\"(?:[^\"]|\"\")*\"|[^,]*))/g)?.map(s => s.replace(/^,?\"?|\"?$/g, "").replaceAll('\"\"','\"')) || line.split(",");
           return {
             id: cols[idx("id")] || uid(),
             date: cols[idx("date")] || new Date().toISOString().slice(0,10),
@@ -470,36 +469,7 @@ export default function FamilyExpensesApp() {
           </CardContent>
         </Card>
 
-        <Extras onAdd={(rows)=> setExpenses(prev => [...rows, ...prev].sort((a,b)=> (a.date < b.date ? 1 : -1)))} />
       </div>
-    </div>
-  );
-}
-
-function Extras({ onAdd }) {
-  const sample = [
-    { date: todayOffset(-3), from: "Карта", to: "Mercadona", category: "Продукты", amount: 42.13, spender: "Ольга", note: "ужин и завтраки" },
-    { date: todayOffset(-2), from: "Наличные", to: "Repsol", category: "Топливо", amount: 30, spender: "Артём", note: "заправка" },
-    { date: todayOffset(-1), from: "Карта", to: "Lidl", category: "Продукты", amount: 25.49, spender: "Ольга" },
-    { date: todayOffset(-1), from: "Карта", to: "Farmacia", category: "Здоровье", amount: 12.99, spender: "Ольга" },
-    { date: todayOffset(0), from: "Счёт", to: "Endesa", category: "Коммуналка", amount: 68.2, spender: "Артём" },
-  ].map(r => ({ id: uid(), ...r }));
-
-  return (
-    <div className="text-center text-sm text-slate-500">
-      <Dialog>
-        <DialogTrigger asChild>
-          <Button variant="ghost">Заполнить тестовыми данными</Button>
-        </DialogTrigger>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Добавить несколько примерных записей?</DialogTitle>
-          </DialogHeader>
-          <div className="flex justify-end gap-2">
-            <Button onClick={()=>onAdd(sample)}>Добавить</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
