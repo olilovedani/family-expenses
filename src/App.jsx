@@ -183,7 +183,7 @@ export default function FamilyExpensesApp() {
     const header = ["id", "date", "from", "to", "category", "amount", "spender", "note"];
     const rows = expenses.map(e => header.map(k => ("" + (e[k] ?? "")).replaceAll('"', '""')));
     const csv = [header.join(","), ...rows.map(r => r.map(v => `"${v}"`).join(","))].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
